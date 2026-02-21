@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=45", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "process-parameter-optimizer"
+version = "0.1.0"
+description = "Autonomous AI system for manufacturing process parameter optimization"
+readme = "README.md"
+requires-python = ">=3.9"
+license = {text = "MIT"}
+
+dependencies = [
+    "scipy>=1.11.0",
+    "numpy>=1.24.0",
+    "scikit-learn>=1.3.0",
+    "torch>=2.1.0",
+    "stable-baselines3>=2.1.0",
+    "pydantic>=2.5.0",
+    "fastapi>=0.104.1",
+    "uvicorn>=0.24.0",
+    "plotly>=5.17.0",
+    "pandas>=2.0.0"
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.3",
+    "pytest-asyncio>=0.21.1",
+    "black>=23.11.0",
+    "mypy>=1.7.0"
+]
