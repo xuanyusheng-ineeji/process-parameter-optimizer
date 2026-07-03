@@ -97,16 +97,26 @@ class BayesianOptimizer:
             def acquisition(x):
                 return -self._expected_improvement(x)
 
-            result = minimize(
-                acquisition,
-                x0=np.mean(self.bounds, axis=1),
-                bounds=self.bounds,
-                method='L-BFGS-B'
+            # Multi-start optimization to avoid getting stuck at a single local optimum
+            best_result = None
+            n_restarts = 10
+            random_starts = np.random.uniform(
+                self.bounds[:, 0], self.bounds[:, 1],
+                size=(n_restarts, len(self.parameter_space))
             )
+            for x0 in random_starts:
+                result = minimize(
+                    acquisition,
+                    x0=x0,
+                    bounds=self.bounds,
+                    method='L-BFGS-B'
+                )
+                if best_result is None or result.fun < best_result.fun:
+                    best_result = result
 
             # Convert back to parameter dict
             params = {
-                name: float(result.x[i])
+                name: float(best_result.x[i])
                 for i, name in enumerate(self.param_names)
             }
             best_acquisitions.append(params)
@@ -123,9 +133,9 @@ class BayesianOptimizer:
         if not self._gp_trained or self._best_score == float('-inf'):
             return 0.0
 
-        # Predict mean and std at this point (simplified)
+        # Predict mean and std at this point
         mu = self._predict_mean(x)
-        sigma = 0.1  # Simplified uncertainty estimate
+        sigma = self._predict_uncertainty(x)
 
         if sigma == 0:
             return 0.0
@@ -158,6 +168,25 @@ class BayesianOptimizer:
         weighted_score = np.sum(np.array(scores) * weights) / np.sum(weights)
 
         return weighted_score
+
+    def _predict_uncertainty(self, x: np.ndarray) -> float:
+        """Estimate uncertainty at x: higher when far from all observed points."""
+        if not self.experiment_history:
+            return 1.0
+
+        # Normalize x and observed points to [0,1] per dimension
+        ranges = self.bounds[:, 1] - self.bounds[:, 0]
+        x_norm = (x - self.bounds[:, 0]) / ranges
+
+        min_dist = float('inf')
+        for exp in self.experiment_history:
+            param_vec = np.array([exp.parameters[name] for name in self.param_names])
+            param_norm = (param_vec - self.bounds[:, 0]) / ranges
+            dist = np.linalg.norm(x_norm - param_norm)
+            min_dist = min(min_dist, dist)
+
+        # Uncertainty scales with distance to nearest observation, capped at 0.5
+        return min(0.5, min_dist * 0.5)
 
     def update(self, result: ExperimentResult) -> None:
         """

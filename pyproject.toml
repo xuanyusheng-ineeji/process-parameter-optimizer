@@ -23,6 +23,9 @@ dependencies = [
     "pandas>=2.0.0"
 ]
 
+[tool.setuptools.packages.find]
+where = ["."]
+
 [project.optional-dependencies]
 dev = [
     "pytest>=7.4.3",
