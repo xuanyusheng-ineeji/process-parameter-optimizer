@@ -1,8 +1,8 @@
 """Recommend optimal equipment Set Points to bring fill weight within spec."""
 
 import numpy as np
-from typing import Dict, List
-from scipy.optimize import minimize, differential_evolution
+from typing import Dict
+from scipy.optimize import minimize
 from .config import PARAM_NAMES, ProductConfig, get_param_bounds
 from .predictor import FillWeightPredictor
 

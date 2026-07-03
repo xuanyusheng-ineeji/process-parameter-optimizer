@@ -15,13 +15,16 @@ conda activate venv
 # Install package in editable mode (required once after cloning)
 pip install -e .
 
-# Run end-to-end demo
+# Run end-to-end demo (batch mode)
 python scripts/demo_filling.py
+
+# Run time-series pipeline demo
+python scripts/demo_filling.py timeseries
 
 # Run all tests
 python -m pytest tests/filling/ -v
 
-# Expected test result: 30 passed
+# Expected test result: 58 passed
 ```
 
 ## Architecture
@@ -30,7 +33,9 @@ python -m pytest tests/filling/ -v
 src/filling/          ← active development (filling process)
   config.py           product configs + parameter bounds
   data_loader.py      CSV/Excel/DataFrame ingestion + cleaning
-  synthetic_data.py   physics-based test data generator
+  synthetic_data.py   physics-based test data generator (batch + 1s time-series)
+  aggregate.py        1s time-series → stable-window batch rows (lag compensation)
+  trend.py            real-time EWMA trend monitor + SPC alerts + OOC prediction
   predictor.py        trains 15 models, selects best by CV R²
   analyzer.py         feature importance + sensitivity direction
   recommender.py      constrained L-BFGS-B optimization for Set Points
@@ -39,8 +44,8 @@ src/core/             ← legacy (injection molding project, not used by filling
   bayesian_optimizer.py
   injection_molding.py
 
-scripts/demo_filling.py   end-to-end 4-step demo
-tests/filling/            30 tests across 5 test files
+scripts/demo_filling.py   batch demo (default) + time-series demo (timeseries arg)
+tests/filling/            58 tests across 7 test files
 ```
 
 ## Key Domain Rules
@@ -118,8 +123,39 @@ The model is static — it does not update itself. For food products with changi
 | test_config.py | 6 | LCL=target invariant, bounds validity, all 16 products present |
 | test_data_loader.py | 6 | Column validation, cleaning, edge cases (empty, single row) |
 | test_predictor.py | 6 | CV R²≥0.80, prediction near target, missing-param ValueError |
-| test_recommender.py | 6 | In-spec output, improvement, max_change_pct bound |
+| test_recommender.py | 5 | In-spec output, improvement, max_change_pct bound |
 | test_analyzer.py | 7 | Importance sums to 100%, direction validity, pct sums to 100% |
+| test_aggregate.py | 11 | Window aggregation, lag compensation, short-window filter, data_loader compat |
+| test_trend.py | 17 | CRITICAL/WARNING alerts, slope direction, OOC prediction, edge cases |
+
+## Time-Series Pipeline
+
+When real PLC data arrives as 1-second rows, use `aggregate.from_timeseries()` before the normal pipeline:
+
+```python
+from src.filling import aggregate, data_loader
+from src.filling.trend import WeightTrendMonitor
+
+# 1. Real-time monitoring on raw 1s data
+monitor = WeightTrendMonitor(product, window_seconds=300)
+report = monitor.analyze(ts_df)
+
+# 2. Aggregate → batch rows for model training
+batches = aggregate.from_timeseries(
+    ts_df, item_cd=item_cd,
+    lag_seconds=2,          # PLC→checkweigher delay
+    min_stable_seconds=30,  # discard transient windows
+)
+
+# 3. Feed into normal pipeline
+df = data_loader.from_dataframe(batches, item_cd=item_cd)
+predictor.train(df, product)
+```
+
+Key parameters:
+- `lag_seconds` — PLC command to actual fill delay (measure per machine; must be ≥ 0)
+- `min_stable_seconds` — minimum window duration to be treated as one "batch"
+- `WeightTrendMonitor.ewma_lambda` — smoothing factor (0.1 = slow/stable, 0.5 = reactive)
 
 ## Known Gaps (do not implement without discussion)
 
@@ -127,4 +163,4 @@ The model is static — it does not update itself. For food products with changi
 - `config.py` product definitions are hardcoded; CSV auto-loading is not implemented.
 - No prediction confidence intervals — point estimates only.
 - No web API layer (FastAPI dependency is present but unused).
-- No time-series or drift modeling for within-shift physical property changes.
+- `PARAM_NAMES` and `nominal_params` in `config.py` are placeholders; replace with real machine parameters from `docs/machine_parameters.txt` once real data is available.

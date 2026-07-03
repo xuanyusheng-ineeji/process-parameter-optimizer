@@ -1,12 +1,12 @@
 """
 Multi-model predictor: trains all candidates and selects the best by CV R².
 
-Candidate models
-----------------
+Candidate models (15 total)
+---------------------------
 Linear family  : LinearRegression, Ridge, Lasso, ElasticNet,
                  HuberRegressor, BayesianRidge
-Kernel         : SVR (RBF kernel)
-Instance-based : KNeighborsRegressor
+Kernel         : SVR_RBF, SVR_Poly
+Instance-based : KNeighbors_5, KNeighbors_10
 Tree / Forest  : DecisionTree, ExtraTrees, RandomForest
 Boosting       : GradientBoosting, HistGradientBoosting
 """
@@ -18,6 +18,7 @@ from typing import Dict, List, Optional
 
 import numpy as np
 import pandas as pd
+from sklearn.base import clone
 from sklearn.ensemble import (
     ExtraTreesRegressor,
     GradientBoostingRegressor,
@@ -122,19 +123,40 @@ class FillWeightPredictor:
 
         results = []
         for name, pipeline in CANDIDATE_MODELS.items():
+            # Clone avoids mutating the module-level template objects:
+            # without clone(), a second train() call would overwrite the
+            # first predictor's fitted state (shared Pipeline reference).
+            pipeline = clone(pipeline)
             # CV may fail for very small datasets (< cv folds); guard gracefully
             try:
                 cv_scores = cross_val_score(
                     pipeline, X, y, cv=min(cv, n), scoring="r2"
                 )
-                r2_mean = float(cv_scores.mean())
-                r2_std = float(cv_scores.std())
+                # sklearn warns but returns NaN for ill-defined folds (e.g. KNN
+                # when n_neighbors > fold size); treat those as failed.
+                finite_scores = cv_scores[np.isfinite(cv_scores)]
+                if len(finite_scores) == 0:
+                    warnings.warn(
+                        f"[predictor] {name}: all CV folds returned NaN R² "
+                        f"(likely n_samples={n} too small for this model)",
+                        stacklevel=2,
+                    )
+                    r2_mean, r2_std = -999.0, 0.0
+                else:
+                    r2_mean = float(finite_scores.mean())
+                    r2_std = float(finite_scores.std())
             except ValueError as e:
                 warnings.warn(f"[predictor] {name}: CV failed — {e}", stacklevel=2)
                 r2_mean, r2_std = -999.0, 0.0
 
-            pipeline.fit(X, y)
-            residuals = y - pipeline.predict(X)
+            try:
+                pipeline.fit(X, y)
+                residuals = y - pipeline.predict(X)
+            except ValueError as e:
+                warnings.warn(f"[predictor] {name}: fit/predict failed — {e}", stacklevel=2)
+                r2_mean = -999.0
+                residuals = np.zeros_like(y, dtype=float)
+
             results.append(
                 {
                     "name": name,

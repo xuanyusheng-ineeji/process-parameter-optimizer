@@ -17,9 +17,18 @@ def trained_predictor():
     return pred
 
 
-def test_r2_above_threshold(trained_predictor):
-    stats = trained_predictor._train_stats
-    assert stats["r2_cv_mean"] >= 0.80, f"R² too low: {stats['r2_cv_mean']:.3f}"
+@pytest.fixture
+def train_result():
+    raw = synthetic_data.generate(ITEM_CD, n_batches=200, seed=42)
+    df = data_loader.from_dataframe(raw, item_cd=ITEM_CD)
+    pred = FillWeightPredictor()
+    return pred.train(df, product)
+
+
+def test_r2_above_threshold(train_result):
+    # train() returns a sorted comparison list; index 0 is the selected model
+    best_r2 = train_result["comparison"][0]["r2_cv_mean"]
+    assert best_r2 >= 0.80, f"R² too low: {best_r2:.3f}"
 
 
 def test_predict_returns_float(trained_predictor):

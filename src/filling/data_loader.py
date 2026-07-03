@@ -2,10 +2,8 @@
 
 import logging
 import pandas as pd
-import numpy as np
-from pathlib import Path
 from typing import Optional
-from .config import PRODUCTS, PARAM_NAMES, ProductConfig
+from .config import PARAM_NAMES, ProductConfig
 
 logger = logging.getLogger(__name__)
 
@@ -92,13 +90,12 @@ def summary(df: pd.DataFrame, product: Optional[ProductConfig] = None) -> None:
     print(df[PARAM_NAMES + ['fill_weight_g']].describe().round(3).to_string())
 
     if product is not None:
-        low  = (df["fill_weight_g"] < product.lcl_g).sum()
-        ok   = ((df["fill_weight_g"] >= product.lcl_g) &
-                (df["fill_weight_g"] <= (product.ucl_g or float("inf")))).sum()
-        high = (product.ucl_g is not None and
-                df["fill_weight_g"] > product.ucl_g).sum() if product.ucl_g else 0
+        w = df["fill_weight_g"]
+        low   = int((w < product.lcl_g).sum())
+        high  = int((w > product.ucl_g).sum()) if product.ucl_g is not None else 0
+        ok    = len(df) - low - high
         total = len(df)
         print(f"\nWeight distribution vs spec:")
-        print(f"  LOW  (< {product.lcl_g}g): {low:4d} ({100*low/total:.1f}%)")
+        print(f"  LOW  (< {product.lcl_g}g):   {low:4d} ({100*low/total:.1f}%)")
         print(f"  OK              : {ok:4d} ({100*ok/total:.1f}%)")
         print(f"  HIGH (> {product.ucl_g}g): {high:4d} ({100*high/total:.1f}%)")

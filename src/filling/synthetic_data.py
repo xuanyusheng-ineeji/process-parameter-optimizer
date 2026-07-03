@@ -1,10 +1,17 @@
-"""Synthetic historical data generator for filling process development and testing."""
+"""Synthetic data generator for filling process development and testing.
+
+Two modes:
+  generate()            → batch-level (one row per parameter setting)
+  generate_timeseries() → 1-second time-series (one row per second)
+"""
 
 import numpy as np
 import pandas as pd
 from typing import Optional
-from .config import ProductConfig, PRODUCTS, PARAM_NAMES, get_param_bounds, get_size_class
+from .config import ProductConfig, PRODUCTS, PARAM_NAMES, get_param_bounds
 
+
+# ── Batch-level generation ────────────────────────────────────────────────────
 
 def generate(
     item_cd: str,
@@ -12,18 +19,15 @@ def generate(
     seed: Optional[int] = 42,
 ) -> pd.DataFrame:
     """
-    Generate synthetic historical production data for one product.
-
-    Each row = one batch. Columns = parameter settings + actual fill weight.
-    Simulates realistic parameter drift and weight variation over time.
+    Generate synthetic historical production data (one row = one batch).
 
     Args:
-        item_cd: Product code from PRODUCTS dict
+        item_cd:   Product code from PRODUCTS dict
         n_batches: Number of historical batches to generate
-        seed: Random seed for reproducibility
+        seed:      Random seed for reproducibility
 
     Returns:
-        DataFrame with columns: batch_id, [params...], fill_weight_g, in_spec
+        DataFrame with columns: batch_id, item_cd, [PARAM_NAMES], fill_weight_g, in_spec
     """
     rng = np.random.default_rng(seed)
     product = PRODUCTS[item_cd]
@@ -32,22 +36,14 @@ def generate(
 
     rows = []
     for i in range(n_batches):
-        # Simulate operator setting parameters near nominal with some variation
-        # Occasional deliberate changes (operator adjustments) + random drift
         params = {}
         for name in PARAM_NAMES:
             lo, hi = bounds[name]
             nom = nominal[name]
-            # 80% of batches: near nominal; 20%: wider exploration
-            if rng.random() < 0.8:
-                std = (hi - lo) * 0.05
-            else:
-                std = (hi - lo) * 0.15
-            val = float(np.clip(rng.normal(nom, std), lo, hi))
-            params[name] = val
+            std = (hi - lo) * (0.05 if rng.random() < 0.8 else 0.15)
+            params[name] = float(np.clip(rng.normal(nom, std), lo, hi))
 
         fill_weight = _compute_weight(params, product, rng)
-
         rows.append({
             "batch_id": f"B{i+1:04d}",
             "item_cd": item_cd,
@@ -60,7 +56,7 @@ def generate(
 
 
 def generate_all(n_batches: int = 200, seed: int = 42) -> pd.DataFrame:
-    """Generate data for all 16 products combined."""
+    """Generate batch-level data for all 16 products combined."""
     frames = []
     for i, item_cd in enumerate(PRODUCTS):
         df = generate(item_cd, n_batches=n_batches, seed=seed + i)
@@ -68,29 +64,107 @@ def generate_all(n_batches: int = 200, seed: int = 42) -> pd.DataFrame:
     return pd.concat(frames, ignore_index=True)
 
 
-def _compute_weight(params: dict, product: ProductConfig, rng: np.random.Generator) -> float:
+# ── Time-series generation ────────────────────────────────────────────────────
+
+def generate_timeseries(
+    item_cd: str,
+    duration_seconds: int = 3600,
+    seed: int = 42,
+    drift_rate_g_per_min: float = 0.5,
+    n_param_adjustments: int = 6,
+) -> pd.DataFrame:
     """
-    Physics-inspired weight model for paste/cream filling.
+    Generate 1-second time-series data simulating a production run.
 
-    Weight ≈ flow_rate × fill_time
-    flow_rate depends on: pressure, nozzle opening, viscosity(temp)
+    Simulates:
+    - Parameters stable for random periods (engineer adjusts occasionally)
+    - Pack-to-pack weight noise
+    - Optional gradual weight drift (viscosity / temperature change over time)
+
+    Args:
+        item_cd:              Product code
+        duration_seconds:     Total simulated run time in seconds
+        seed:                 Random seed
+        drift_rate_g_per_min: Gradual weight drift rate (g/min).
+                              Positive = weight creeping up, negative = falling.
+                              Simulates viscosity thinning / thickening over a shift.
+        n_param_adjustments:  How many times the engineer adjusts parameters.
+
+    Returns:
+        DataFrame with columns:
+            timestamp, item_cd, [PARAM_NAMES], fill_weight_g, in_spec
     """
-    nominal = product.nominal_params
-    target = product.target_g
+    rng = np.random.default_rng(seed)
+    product = PRODUCTS[item_cd]
+    bounds = get_param_bounds(product)
+    nominal = product.nominal_params.copy()
 
-    # Each parameter's relative contribution to fill weight
-    time_ratio     = params["fill_time_s"]        / nominal["fill_time_s"]
-    pressure_ratio = params["fill_pressure_bar"]  / nominal["fill_pressure_bar"]
-    nozzle_ratio   = params["nozzle_opening_pct"] / nominal["nozzle_opening_pct"]
+    # ── Build parameter adjustment schedule ───────────────────────────────────
+    # Distribute adjustment times evenly across the run with some jitter
+    min_gap = max(60, duration_seconds // (n_param_adjustments + 1))
+    change_times = [0]
+    for k in range(n_param_adjustments):
+        t = change_times[-1] + int(rng.integers(min_gap, min_gap * 2))
+        if t >= duration_seconds - 60:
+            break
+        change_times.append(t)
 
-    # Temperature effect: higher temp → lower viscosity → higher flow → more weight
-    temp_delta = params["product_temp_c"] - nominal["product_temp_c"]
-    temp_factor = 1.0 + 0.003 * temp_delta
+    # For each period, define parameter settings
+    period_params = []
+    current = dict(nominal)
+    for idx, _ in enumerate(change_times):
+        period_params.append(current.copy())
+        if idx < len(change_times) - 1:
+            # Adjust 1–2 parameters by a small amount
+            n_change = rng.integers(1, 3)
+            for param in rng.choice(PARAM_NAMES, size=int(n_change), replace=False):
+                lo, hi = bounds[param]
+                delta = (hi - lo) * float(rng.uniform(0.03, 0.10))
+                direction = float(rng.choice([-1, 1]))
+                current[param] = float(np.clip(current[param] + direction * delta, lo, hi))
 
-    # line_speed effect: faster line → less effective fill time
-    speed_ratio = nominal["line_speed_bpm"] / params["line_speed_bpm"]
+    # ── Generate 1-second rows ────────────────────────────────────────────────
+    drift_g_per_s = drift_rate_g_per_min / 60.0
+    noise_pct = 0.005 if product.target_g <= 500 else 0.003
+    origin = pd.Timestamp("2024-01-01 08:00:00")
 
-    weight_ratio = (
+    rows = []
+    for t in range(duration_seconds):
+        # Find which parameter period applies
+        period_idx = sum(1 for ct in change_times if ct <= t) - 1
+        params = period_params[period_idx]
+
+        weight_ratio = _weight_ratio(params, product)
+        base_weight  = product.target_g * weight_ratio
+        drift        = drift_g_per_s * t
+        noise        = float(rng.normal(0, product.target_g * noise_pct))
+        fill_weight  = base_weight + drift + noise
+
+        rows.append({
+            "timestamp":    origin + pd.Timedelta(seconds=t),
+            "item_cd":      item_cd,
+            **{p: params[p] for p in PARAM_NAMES},
+            "fill_weight_g": round(fill_weight, 2),
+            "in_spec":       _in_spec(fill_weight, product),
+        })
+
+    return pd.DataFrame(rows)
+
+
+# ── Internal helpers ──────────────────────────────────────────────────────────
+
+def _weight_ratio(params: dict, product: ProductConfig) -> float:
+    """
+    Compute the deterministic weight ratio (no noise) from the physics model.
+    weight = target_g × weight_ratio  (before adding noise or drift).
+    """
+    nom = product.nominal_params
+    time_ratio     = params["fill_time_s"]        / nom["fill_time_s"]
+    pressure_ratio = params["fill_pressure_bar"]  / nom["fill_pressure_bar"]
+    nozzle_ratio   = params["nozzle_opening_pct"] / nom["nozzle_opening_pct"]
+    speed_ratio    = nom["line_speed_bpm"]        / params["line_speed_bpm"]
+    temp_factor    = 1.0 + 0.003 * (params["product_temp_c"] - nom["product_temp_c"])
+    return (
         time_ratio     ** 0.85 *
         pressure_ratio ** 0.30 *
         nozzle_ratio   ** 0.20 *
@@ -98,11 +172,13 @@ def _compute_weight(params: dict, product: ProductConfig, rng: np.random.Generat
         temp_factor
     )
 
-    # Measurement noise: ±0.3% of target for small packs, ±0.15% for large
-    noise_pct = 0.003 if product.target_g <= 500 else 0.0015
-    noise = rng.normal(0, target * noise_pct)
 
-    return target * weight_ratio + noise
+def _compute_weight(params: dict, product: ProductConfig, rng: np.random.Generator) -> float:
+    """Physics-inspired weight with measurement noise (batch-level use)."""
+    target    = product.target_g
+    noise_pct = 0.003 if target <= 500 else 0.0015
+    noise     = rng.normal(0, target * noise_pct)
+    return target * _weight_ratio(params, product) + noise
 
 
 def _in_spec(weight: float, product: ProductConfig) -> str:

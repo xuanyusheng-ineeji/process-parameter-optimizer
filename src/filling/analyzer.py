@@ -86,7 +86,7 @@ class RootCauseAnalyzer:
         std_w = weights.std()
 
         low_pct  = (weights < lcl).mean() * 100
-        high_pct = (weights > ucl).mean() * 100 if ucl else 0.0
+        high_pct = (weights > ucl).mean() * 100 if ucl is not None else 0.0
         ok_pct   = 100 - low_pct - high_pct
 
         return {
