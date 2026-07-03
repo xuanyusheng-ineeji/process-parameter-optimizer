@@ -1,5 +1,9 @@
 # Process Parameter Optimizer
 
+**Language / 语言 / 언어:** [English](README.md) · [中文](README.zh-CN.md) · [한국어](README.ko.md)
+
+---
+
 **AI-assisted Set Point recommendation system for food factory filling lines**
 
 Analyzes historical production data, identifies root causes of fill weight deviation, and recommends equipment parameter adjustments — without touching the PLC.
